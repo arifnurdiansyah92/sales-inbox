@@ -51,7 +51,7 @@ export type Config = {
 
 const themeConfig: Config = {
   templateName: 'Sales Inbox',
-  homePageUrl: '/home',
+  homePageUrl: '/inbox',
   settingsCookieName: 'vuexy-mui-next-demo-1',
   mode: 'system', // 'system', 'light', 'dark'
   skin: 'default', // 'default', 'bordered'
