@@ -316,6 +316,24 @@ func (s *Store) SetChatNameIfEmpty(ctx context.Context, jid, name string) error 
 	return err
 }
 
+// ListChatsWithEmptyName mengembalikan jid chat 1:1 yang nama tampilannya belum diketahui.
+func (s *Store) ListChatsWithEmptyName(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT jid FROM chats WHERE account_id=$1 AND name='' AND NOT is_group`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jids []string
+	for rows.Next() {
+		var j string
+		if err := rows.Scan(&j); err != nil {
+			return nil, err
+		}
+		jids = append(jids, j)
+	}
+	return jids, rows.Err()
+}
+
 func (s *Store) Wipe(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE account_id=$1`, accountID); err != nil {
 		return err

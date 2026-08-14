@@ -12,7 +12,7 @@ import MessageList from './MessageList'
 
 // Util Imports
 import type { MessagesMeta } from './reducer'
-import { chatStatus } from './utils'
+import { chatDisplayName, chatStatus } from './utils'
 
 type Props = {
   chat: Chat | null
@@ -51,10 +51,10 @@ const ChatPanel = ({
   return (
     <div className='flex flex-col flex-auto min-is-0 min-bs-0'>
       <div className='flex items-center gap-3 pli-4 plb-3 border-be border-divider shrink-0'>
-        <ChatAvatar jid={chat.jid} name={chat.name} />
+        <ChatAvatar jid={chat.jid} name={chatDisplayName(chat)} />
         <div className='flex flex-col min-is-0 flex-auto'>
           <Typography color='text.primary' className='font-medium' noWrap>
-            {chat.name}
+            {chatDisplayName(chat)}
           </Typography>
           {chat.isGroup && (
             <Typography variant='caption' color='text.secondary'>

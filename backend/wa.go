@@ -506,6 +506,46 @@ func (m *Manager) warmCaches(cli *whatsmeow.Client) {
 		}
 	}
 	m.nameMu.Unlock()
+
+	m.backfillChatNames(ctx, cli)
+}
+
+// backfillChatNames mengisi nama chat yang masih kosong (sisa history sync lama
+// dan chat @lid) dari contact store + pemetaan LID→nomor telepon.
+func (m *Manager) backfillChatNames(ctx context.Context, cli *whatsmeow.Client) {
+	empty, err := m.st.ListChatsWithEmptyName(ctx)
+	if err != nil {
+		log.Printf("list empty-name chats: %v", err)
+		return
+	}
+	filled := 0
+	for _, raw := range empty {
+		jid, err := types.ParseJID(raw)
+		if err != nil {
+			continue
+		}
+		target := jid
+		if jid.Server == types.HiddenUserServer {
+			if pn, err := cli.Store.LIDs.GetPNForLID(ctx, jid); err == nil && !pn.IsEmpty() {
+				target = pn.ToNonAD()
+			}
+		}
+		name := m.contactName(ctx, target)
+		if name == "" && target.Server == types.DefaultUserServer && target != jid {
+			// tanpa nama kontak pun, nomor telepon hasil pemetaan LID lebih berguna daripada kosong
+			name = target.User
+		}
+		if name == "" {
+			continue
+		}
+		if err := m.st.SetChatNameIfEmpty(ctx, raw, name); err != nil {
+			continue
+		}
+		filled++
+	}
+	if filled > 0 {
+		log.Printf("backfill nama chat: %d terisi", filled)
+	}
 }
 
 // resetAfterLogout wipes the app DB and rebuilds a fresh device + client.

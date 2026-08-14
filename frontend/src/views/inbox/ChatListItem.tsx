@@ -13,7 +13,7 @@ import type { Chat } from '@/types/chatTypes'
 import ChatAvatar from './ChatAvatar'
 
 // Util Imports
-import { formatListTime } from './utils'
+import { chatDisplayName, formatListTime } from './utils'
 
 type Props = {
   chat: Chat
@@ -35,12 +35,12 @@ const ChatListItem = ({ chat, selected, viewerNames, onSelect }: Props) => (
       }
     }}
   >
-    <ChatAvatar jid={chat.jid} name={chat.name} />
+    <ChatAvatar jid={chat.jid} name={chatDisplayName(chat)} />
     <div className='flex flex-col flex-auto min-is-0'>
       <div className='flex items-center gap-2'>
         {chat.isGroup && <i className='tabler-users text-base text-textSecondary shrink-0' />}
         <Typography color='text.primary' className='font-medium flex-auto' noWrap>
-          {chat.name}
+          {chatDisplayName(chat)}
         </Typography>
         {chat.lastMessageAt > 0 && (
           <Typography variant='caption' color='text.secondary' className='shrink-0'>

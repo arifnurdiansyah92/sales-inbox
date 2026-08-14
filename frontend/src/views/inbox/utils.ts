@@ -6,6 +6,9 @@ const DAY_MS = 24 * 60 * 60 * 1000
 // Older rows created before the status column exists count as open
 export const chatStatus = (chat: Chat): ChatStatus => chat.status ?? 'open'
 
+// Nama tampilan chat: nama kontak, atau nomor telepon dari JID kalau belum dikenal
+export const chatDisplayName = (chat: Chat): string => chat.name || chat.jid.split('@')[0]
+
 export const isSameDay = (a: number, b: number): boolean => {
   const dateA = new Date(a)
   const dateB = new Date(b)

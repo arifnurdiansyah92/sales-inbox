@@ -34,7 +34,7 @@ import CustomTextField from '@core/components/mui/TextField'
 import ChatListItem from './ChatListItem'
 
 // Util Imports
-import { chatStatus } from './utils'
+import { chatDisplayName, chatStatus } from './utils'
 
 type Props = {
   chats: Chat[]
@@ -87,7 +87,7 @@ const ChatSidebar = ({
 
     if (!term) return byStatus
 
-    return byStatus.filter(chat => chat.name.toLowerCase().includes(term))
+    return byStatus.filter(chat => chatDisplayName(chat).toLowerCase().includes(term))
   }, [chats, search, statusFilter])
 
   const viewerNamesByJid = useMemo(() => {
@@ -140,11 +140,7 @@ const ChatSidebar = ({
                   className='max-is-[120px] mie-1 cursor-pointer'
                 />
               </Tooltip>
-              <Menu
-                anchorEl={adminMenuAnchor}
-                open={Boolean(adminMenuAnchor)}
-                onClose={() => setAdminMenuAnchor(null)}
-              >
+              <Menu anchorEl={adminMenuAnchor} open={Boolean(adminMenuAnchor)} onClose={() => setAdminMenuAnchor(null)}>
                 <MenuItem
                   onClick={() => {
                     setAdminMenuAnchor(null)
