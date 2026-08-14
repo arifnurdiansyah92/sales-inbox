@@ -1,0 +1,18 @@
+# Binaries
+*.exe
+backend/backend
+
+# Local data (SQLite, media) — never commit
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# Env & secrets
+.env
+.env.local
+.env.production
+
+# OS
+Thumbs.db
+.DS_Store
