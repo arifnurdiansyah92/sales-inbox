@@ -42,6 +42,7 @@ const ChatListItem = ({ chat, selected, viewerNames, onSelect }: Props) => (
         <Typography color='text.primary' className='font-medium flex-auto' noWrap>
           {chatDisplayName(chat)}
         </Typography>
+        {chat.pinned && <i className='tabler-pin-filled text-base text-textSecondary shrink-0' />}
         {chat.lastMessageAt > 0 && (
           <Typography variant='caption' color='text.secondary' className='shrink-0'>
             {formatListTime(chat.lastMessageAt)}

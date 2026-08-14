@@ -38,6 +38,7 @@ type Chat struct {
 	LastMessageAt int64  `json:"lastMessageAt"`
 	UnreadCount   int    `json:"unreadCount"`
 	Status        string `json:"status"` // "open"|"resolved"
+	Pinned        bool   `json:"pinned"`
 }
 
 type Message struct {
@@ -160,9 +161,9 @@ func (s *Store) UpsertChat(ctx context.Context, q dbtx, jid, name string, isGrou
 func (s *Store) GetChat(ctx context.Context, jid string) (Chat, bool, error) {
 	var c Chat
 	err := s.db.QueryRowContext(ctx,
-		`SELECT jid, name, is_group, last_msg_text, last_msg_ts, unread_count, status FROM chats WHERE account_id=$1 AND jid=$2`,
+		`SELECT jid, name, is_group, last_msg_text, last_msg_ts, unread_count, status, pinned FROM chats WHERE account_id=$1 AND jid=$2`,
 		accountID, jid).
-		Scan(&c.JID, &c.Name, &c.IsGroup, &c.LastMessage, &c.LastMessageAt, &c.UnreadCount, &c.Status)
+		Scan(&c.JID, &c.Name, &c.IsGroup, &c.LastMessage, &c.LastMessageAt, &c.UnreadCount, &c.Status, &c.Pinned)
 	if err == sql.ErrNoRows {
 		return Chat{}, false, nil
 	}
@@ -174,7 +175,7 @@ func (s *Store) GetChat(ctx context.Context, jid string) (Chat, bool, error) {
 
 func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT jid, name, is_group, last_msg_text, last_msg_ts, unread_count, status FROM chats WHERE account_id=$1 ORDER BY last_msg_ts DESC`,
+		`SELECT jid, name, is_group, last_msg_text, last_msg_ts, unread_count, status, pinned FROM chats WHERE account_id=$1 ORDER BY pinned DESC, last_msg_ts DESC`,
 		accountID)
 	if err != nil {
 		return nil, err
@@ -183,7 +184,7 @@ func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 	out := make([]Chat, 0)
 	for rows.Next() {
 		var c Chat
-		if err := rows.Scan(&c.JID, &c.Name, &c.IsGroup, &c.LastMessage, &c.LastMessageAt, &c.UnreadCount, &c.Status); err != nil {
+		if err := rows.Scan(&c.JID, &c.Name, &c.IsGroup, &c.LastMessage, &c.LastMessageAt, &c.UnreadCount, &c.Status, &c.Pinned); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -313,6 +314,36 @@ func (s *Store) ClearUnread(ctx context.Context, jid string) error {
 
 func (s *Store) SetChatNameIfEmpty(ctx context.Context, jid, name string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE chats SET name=$3 WHERE account_id=$1 AND jid=$2 AND name=''`, accountID, jid, name)
+	return err
+}
+
+func (s *Store) SetChatPinned(ctx context.Context, jid string, pinned bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE chats SET pinned=$3 WHERE account_id=$1 AND jid=$2`, accountID, jid, pinned)
+	return err
+}
+
+// ListPinnedFromChatSettings membaca chat yang di-pin dari store whatsmeow
+// (tabel berbagi database yang sama).
+func (s *Store) ListPinnedFromChatSettings(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT chat_jid FROM whatsmeow_chat_settings WHERE pinned`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jids []string
+	for rows.Next() {
+		var j string
+		if err := rows.Scan(&j); err != nil {
+			return nil, err
+		}
+		jids = append(jids, j)
+	}
+	return jids, rows.Err()
+}
+
+// ClearAllPinned menurunkan semua pin (dipakai sebelum sinkronisasi ulang).
+func (s *Store) ClearAllPinned(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE chats SET pinned=FALSE WHERE account_id=$1 AND pinned`, accountID)
 	return err
 }
 

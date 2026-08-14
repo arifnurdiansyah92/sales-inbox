@@ -22,6 +22,7 @@ export type Chat = {
   lastMessageAt: number
   unreadCount: number
   status?: ChatStatus
+  pinned?: boolean
 }
 
 export type Message = {

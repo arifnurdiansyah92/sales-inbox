@@ -404,6 +404,16 @@ func (m *Manager) handleEvent(evt any) {
 		if warm {
 			go m.warmCaches(cli)
 		}
+	case *events.Pin:
+		ctx := context.Background()
+		canon := m.canonicalChat(ctx, e.JID, types.EmptyJID)
+		if err := m.st.SetChatPinned(ctx, canon.String(), e.Action.GetPinned()); err != nil {
+			log.Printf("set pinned %s: %v", canon, err)
+			break
+		}
+		if chat, ok, err := m.st.GetChat(ctx, canon.String()); err == nil && ok {
+			m.hub.Broadcast(Frame{Type: "chat_upsert", Data: chat})
+		}
 	case *events.PairSuccess:
 		log.Printf("pair success: %s", e.ID)
 	case *events.Disconnected:
@@ -508,6 +518,34 @@ func (m *Manager) warmCaches(cli *whatsmeow.Client) {
 	m.nameMu.Unlock()
 
 	m.backfillChatNames(ctx, cli)
+	m.syncPinnedChats(ctx, cli)
+}
+
+// syncPinnedChats menyelaraskan kolom pinned dengan pengaturan pin WhatsApp.
+func (m *Manager) syncPinnedChats(ctx context.Context, cli *whatsmeow.Client) {
+	jids, err := m.st.ListPinnedFromChatSettings(ctx)
+	if err != nil {
+		log.Printf("list pinned chats: %v", err)
+		return
+	}
+	if err := m.st.ClearAllPinned(ctx); err != nil {
+		log.Printf("clear pinned: %v", err)
+		return
+	}
+	for _, raw := range jids {
+		jid, err := types.ParseJID(raw)
+		if err != nil {
+			continue
+		}
+		canon := m.canonicalChat(ctx, jid, types.EmptyJID)
+		if err := m.st.SetChatPinned(ctx, canon.String(), true); err != nil {
+			log.Printf("set pinned %s: %v", canon, err)
+			continue
+		}
+		if chat, ok, err := m.st.GetChat(ctx, canon.String()); err == nil && ok {
+			m.hub.Broadcast(Frame{Type: "chat_upsert", Data: chat})
+		}
+	}
 }
 
 // backfillChatNames mengisi nama chat yang masih kosong (sisa history sync lama

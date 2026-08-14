@@ -58,6 +58,7 @@ CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions (expiry);
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS admin_id BIGINT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS admin_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE chats ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open';
+ALTER TABLE chats ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
 `
 
 // Init creates the app tables and index if they do not exist.

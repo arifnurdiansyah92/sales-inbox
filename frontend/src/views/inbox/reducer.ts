@@ -86,7 +86,12 @@ export const compareMessages = (a: Message, b: Message): number => {
   return 0
 }
 
-const sortChats = (chats: Chat[]): Chat[] => [...chats].sort((a, b) => b.lastMessageAt - a.lastMessageAt)
+const sortChats = (chats: Chat[]): Chat[] =>
+  [...chats].sort((a, b) => {
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
+
+    return b.lastMessageAt - a.lastMessageAt
+  })
 
 const upsertChat = (chats: Chat[], chat: Chat): Chat[] => {
   const exists = chats.some(c => c.jid === chat.jid)
