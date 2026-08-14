@@ -1,4 +1,5 @@
 // MUI Imports
+import Button from '@mui/material/Button'
 import Typography from '@mui/material/Typography'
 
 // Type Imports
@@ -11,27 +12,32 @@ import MessageList from './MessageList'
 
 // Util Imports
 import type { MessagesMeta } from './reducer'
+import { chatStatus } from './utils'
 
 type Props = {
   chat: Chat | null
   messages: Message[]
   meta: MessagesMeta
+  viewerNames: string[]
   onSend: (text: string) => void
   onSendMedia: (file: File) => void
   onLoadOlder: (jid: string) => void
   onRetryInitial: (jid: string) => void
   onRetryMessage: (message: Message) => void
+  onToggleStatus: (chat: Chat) => void
 }
 
 const ChatPanel = ({
   chat,
   messages,
   meta,
+  viewerNames,
   onSend,
   onSendMedia,
   onLoadOlder,
   onRetryInitial,
-  onRetryMessage
+  onRetryMessage,
+  onToggleStatus
 }: Props) => {
   if (!chat) {
     return (
@@ -46,7 +52,7 @@ const ChatPanel = ({
     <div className='flex flex-col flex-auto min-is-0 min-bs-0'>
       <div className='flex items-center gap-3 pli-4 plb-3 border-be border-divider shrink-0'>
         <ChatAvatar jid={chat.jid} name={chat.name} />
-        <div className='flex flex-col min-is-0'>
+        <div className='flex flex-col min-is-0 flex-auto'>
           <Typography color='text.primary' className='font-medium' noWrap>
             {chat.name}
           </Typography>
@@ -55,7 +61,34 @@ const ChatPanel = ({
               Grup
             </Typography>
           )}
+          {viewerNames.length > 0 && (
+            <Typography variant='caption' color='text.secondary' noWrap>
+              {viewerNames.join(', ')} sedang membuka chat ini
+            </Typography>
+          )}
         </div>
+        {chatStatus(chat) === 'open' ? (
+          <Button
+            size='small'
+            variant='outlined'
+            color='success'
+            startIcon={<i className='tabler-check' />}
+            className='shrink-0'
+            onClick={() => onToggleStatus(chat)}
+          >
+            Tandai Selesai
+          </Button>
+        ) : (
+          <Button
+            size='small'
+            variant='text'
+            startIcon={<i className='tabler-rotate' />}
+            className='shrink-0'
+            onClick={() => onToggleStatus(chat)}
+          >
+            Buka Lagi
+          </Button>
+        )}
       </div>
       <MessageList
         chatJid={chat.jid}

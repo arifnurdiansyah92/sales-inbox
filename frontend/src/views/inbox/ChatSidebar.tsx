@@ -6,6 +6,7 @@ import { useMemo, useState } from 'react'
 // MUI Imports
 import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'
+import Chip from '@mui/material/Chip'
 import Dialog from '@mui/material/Dialog'
 import DialogActions from '@mui/material/DialogActions'
 import DialogContent from '@mui/material/DialogContent'
@@ -16,18 +17,24 @@ import InputAdornment from '@mui/material/InputAdornment'
 import Menu from '@mui/material/Menu'
 import MenuItem from '@mui/material/MenuItem'
 import Skeleton from '@mui/material/Skeleton'
+import Tab from '@mui/material/Tab'
+import Tabs from '@mui/material/Tabs'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 
 // Type Imports
-import type { Chat, Me } from '@/types/chatTypes'
+import type { AdminUser, Chat, Me, PresenceViewer } from '@/types/chatTypes'
 
 import type { NotificationMode } from './hooks/useNotificationSound'
+import type { ChatStatusFilter } from './reducer'
 
 // Component Imports
 import CustomTextField from '@core/components/mui/TextField'
 
 import ChatListItem from './ChatListItem'
+
+// Util Imports
+import { chatStatus } from './utils'
 
 type Props = {
   chats: Chat[]
@@ -35,13 +42,18 @@ type Props = {
   error: boolean
   selectedJid: string | null
   search: string
+  statusFilter: ChatStatusFilter
   me: Me | null
+  admin: AdminUser | null
+  viewers: PresenceViewer[]
   soundMode: NotificationMode
   onSoundModeChange: (mode: NotificationMode) => void
   onSearchChange: (value: string) => void
+  onStatusFilterChange: (value: ChatStatusFilter) => void
   onSelectChat: (jid: string) => void
   onRetry: () => void
   onLogout: () => void
+  onAdminLogout: () => void
 }
 
 const ChatSidebar = ({
@@ -50,26 +62,46 @@ const ChatSidebar = ({
   error,
   selectedJid,
   search,
+  statusFilter,
   me,
+  admin,
+  viewers,
   soundMode,
   onSoundModeChange,
   onSearchChange,
+  onStatusFilterChange,
   onSelectChat,
   onRetry,
-  onLogout
+  onLogout,
+  onAdminLogout
 }: Props) => {
   // States
   const [logoutDialogOpen, setLogoutDialogOpen] = useState(false)
   const [soundMenuAnchor, setSoundMenuAnchor] = useState<HTMLElement | null>(null)
+  const [adminMenuAnchor, setAdminMenuAnchor] = useState<HTMLElement | null>(null)
 
   // Vars
   const filteredChats = useMemo(() => {
     const term = search.trim().toLowerCase()
+    const byStatus = statusFilter === 'all' ? chats : chats.filter(chat => chatStatus(chat) === statusFilter)
 
-    if (!term) return chats
+    if (!term) return byStatus
 
-    return chats.filter(chat => chat.name.toLowerCase().includes(term))
-  }, [chats, search])
+    return byStatus.filter(chat => chat.name.toLowerCase().includes(term))
+  }, [chats, search, statusFilter])
+
+  const viewerNamesByJid = useMemo(() => {
+    const map = new Map<string, string[]>()
+
+    for (const viewer of viewers) {
+      const names = map.get(viewer.chatJid) ?? []
+
+      names.push(viewer.adminName)
+      map.set(viewer.chatJid, names)
+    }
+
+    return map
+  }, [viewers])
 
   const handleConfirmLogout = () => {
     setLogoutDialogOpen(false)
@@ -96,6 +128,35 @@ const ChatSidebar = ({
           )}
         </div>
         <div className='flex items-center'>
+          {admin && (
+            <>
+              <Tooltip title={admin.name}>
+                <Chip
+                  size='small'
+                  variant='outlined'
+                  icon={<i className='tabler-user text-base' />}
+                  label={admin.name}
+                  onClick={e => setAdminMenuAnchor(e.currentTarget)}
+                  className='max-is-[120px] mie-1 cursor-pointer'
+                />
+              </Tooltip>
+              <Menu
+                anchorEl={adminMenuAnchor}
+                open={Boolean(adminMenuAnchor)}
+                onClose={() => setAdminMenuAnchor(null)}
+              >
+                <MenuItem
+                  onClick={() => {
+                    setAdminMenuAnchor(null)
+                    onAdminLogout()
+                  }}
+                >
+                  <i className='tabler-logout text-xl mie-2' />
+                  Keluar
+                </MenuItem>
+              </Menu>
+            </>
+          )}
           <Tooltip title='Suara notifikasi'>
             <IconButton onClick={e => setSoundMenuAnchor(e.currentTarget)} aria-label='Suara notifikasi'>
               <i className={soundIcon} />
@@ -139,6 +200,17 @@ const ChatSidebar = ({
           }}
         />
       </div>
+      <Tabs
+        value={statusFilter}
+        onChange={(_, value: ChatStatusFilter) => onStatusFilterChange(value)}
+        variant='fullWidth'
+        className='border-be border-divider shrink-0'
+        sx={{ minBlockSize: 38, '& .MuiTab-root': { minBlockSize: 38 } }}
+      >
+        <Tab value='open' label='Terbuka' />
+        <Tab value='resolved' label='Selesai' />
+        <Tab value='all' label='Semua' />
+      </Tabs>
       <div className='overflow-y-auto flex-auto min-bs-0'>
         {loading ? (
           [...Array(5)].map((_, index) => (
@@ -173,7 +245,13 @@ const ChatSidebar = ({
           </Typography>
         ) : (
           filteredChats.map(chat => (
-            <ChatListItem key={chat.jid} chat={chat} selected={chat.jid === selectedJid} onSelect={onSelectChat} />
+            <ChatListItem
+              key={chat.jid}
+              chat={chat}
+              selected={chat.jid === selectedJid}
+              viewerNames={viewerNamesByJid.get(chat.jid) ?? []}
+              onSelect={onSelectChat}
+            />
           ))
         )}
       </div>

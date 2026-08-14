@@ -1,16 +1,20 @@
 'use client'
 
 // React Imports
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+
+// Next Imports
+import { useRouter } from 'next/navigation'
 
 // MUI Imports
 import Alert from '@mui/material/Alert'
+import Snackbar from '@mui/material/Snackbar'
 
 // Third-party Imports
 import classnames from 'classnames'
 
 // Type Imports
-import type { Message, MessageType, WSEvent } from '@/types/chatTypes'
+import type { Chat, Message, MessageType, WSEvent } from '@/types/chatTypes'
 
 // Component Imports
 import ChatPanel from './ChatPanel'
@@ -22,13 +26,33 @@ import { useNotificationSound } from './hooks/useNotificationSound'
 import { useWhatsAppSocket } from './hooks/useWhatsAppSocket'
 
 // Util Imports
-import { fetchChats, fetchMessages, fetchStatus, logout, sendMedia, sendMessage } from '@/utils/whatsappApi'
+import {
+  ApiError,
+  authLogout,
+  fetchChats,
+  fetchMe,
+  fetchMessages,
+  fetchStatus,
+  logout,
+  markChatRead,
+  sendMedia,
+  sendMessage,
+  setChatStatus,
+  setOnUnauthorized
+} from '@/utils/whatsappApi'
 
 import { commonLayoutClasses } from '@layouts/utils/layoutClasses'
 
 import { MESSAGE_PAGE_SIZE, initialInboxState, inboxReducer } from './reducer'
+import { chatStatus } from './utils'
 
 const EMPTY_META = { loading: true, error: false, hasMore: false }
+
+// An optimistic send still pending after this long is marked failed
+const PENDING_FAIL_TIMEOUT_MS = 30000
+
+// On WS reconnect, pending sends older than this are swept to failed
+const PENDING_SWEEP_AGE_MS = 10000
 
 const mediaTypeFromFile = (file: File): MessageType => {
   if (file.type.startsWith('image/') && file.type !== 'image/gif') return 'image'
@@ -40,9 +64,18 @@ const mediaTypeFromFile = (file: File): MessageType => {
 const InboxView = () => {
   // States
   const [state, dispatch] = useReducer(inboxReducer, initialInboxState)
+  const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null)
 
   // Refs (original File per temp id so a failed media send can be retried)
   const pendingFilesRef = useRef(new Map<string, File>())
+
+  // Refs (pending→failed timers per temp id, cleared when the server responds)
+  const failTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+
+  // Refs (latest selection for WS callbacks that outlive the render)
+  const selectedJidRef = useRef<string | null>(null)
+
+  selectedJidRef.current = state.selectedJid
 
   const loadChats = useCallback(async () => {
     dispatch({ type: 'CHATS_LOADING' })
@@ -89,9 +122,10 @@ const InboxView = () => {
   }, [loadChats])
 
   // Hooks
+  const router = useRouter()
   const { mode: soundMode, setMode: setSoundMode, notify } = useNotificationSound()
 
-  const { live } = useWhatsAppSocket({
+  const { live, send } = useWhatsAppSocket({
     onEvent: (e: WSEvent) => {
       switch (e.type) {
         case 'status':
@@ -100,15 +134,26 @@ const InboxView = () => {
         case 'qr':
           dispatch({ type: 'QR_RECEIVED', payload: e.data })
           break
-        case 'message':
-          if (!e.data.fromMe) notify()
+
+        case 'message': {
+          const activeAndFocused = e.data.chatJid === selectedJidRef.current && document.hasFocus()
+
+          // Mute the sound for the chat the admin is actively reading; mark it read for the team instead
+          if (!e.data.fromMe && !activeAndFocused) notify()
+          if (!e.data.fromMe && activeAndFocused) markChatRead(e.data.chatJid).catch(() => undefined)
+
           dispatch({ type: 'MESSAGE_RECEIVED', payload: e.data })
           break
+        }
+
         case 'chat_upsert':
           dispatch({ type: 'CHAT_UPSERTED', payload: e.data })
           break
         case 'receipt':
           dispatch({ type: 'RECEIPT_RECEIVED', payload: e.data })
+          break
+        case 'presence':
+          dispatch({ type: 'PRESENCE_CHANGED', payload: e.data.viewers })
           break
       }
     },
@@ -116,13 +161,47 @@ const InboxView = () => {
     // Refetch status + chats on every (re)connect to heal missed events
     onOpen: () => {
       refreshStatus()
+      send({ type: 'viewing', data: { chatJid: selectedJidRef.current } })
+      dispatch({ type: 'PENDING_SWEPT', payload: { olderThanTs: Date.now() - PENDING_SWEEP_AGE_MS } })
     }
   })
 
-  // Bootstrap: fetch initial status (chats follow via the connected effect)
+  // Redirect to /login whenever any request hits a 401 mid-session
   useEffect(() => {
-    refreshStatus()
-  }, [refreshStatus])
+    setOnUnauthorized(() => router.replace('/login'))
+
+    return () => setOnUnauthorized(null)
+  }, [router])
+
+  // Bootstrap: verify the admin session first, then fetch status (chats follow via the connected effect)
+  useEffect(() => {
+    let cancelled = false
+
+    fetchMe()
+      .then(admin => {
+        if (cancelled) return
+
+        dispatch({ type: 'ADMIN_LOADED', payload: admin })
+        refreshStatus()
+      })
+      .catch(() => {
+        if (!cancelled) router.replace('/login')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [refreshStatus, router])
+
+  // Clear any armed pending→failed timers on unmount
+  useEffect(() => {
+    const timers = failTimersRef.current
+
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer)
+      timers.clear()
+    }
+  }, [])
 
   // Keep reducer state in sync with the socket liveness
   useEffect(() => {
@@ -147,6 +226,45 @@ const InboxView = () => {
   const selectedMessages = state.selectedJid ? (state.messages[state.selectedJid] ?? []) : []
   const selectedMeta = state.selectedJid ? (state.messagesMeta[state.selectedJid] ?? EMPTY_META) : EMPTY_META
 
+  // Other admins' presence (own entry filtered out by adminId)
+  const otherViewers = useMemo(
+    () => state.viewers.filter(viewer => viewer.adminId !== state.admin?.id),
+    [state.viewers, state.admin]
+  )
+
+  const selectedViewerNames = useMemo(
+    () => otherViewers.filter(viewer => viewer.chatJid === state.selectedJid).map(viewer => viewer.adminName),
+    [otherViewers, state.selectedJid]
+  )
+
+  const clearFailTimer = (tempId: string) => {
+    const timer = failTimersRef.current.get(tempId)
+
+    if (timer) {
+      clearTimeout(timer)
+      failTimersRef.current.delete(tempId)
+    }
+  }
+
+  const armFailTimer = (chatJid: string, tempId: string) => {
+    clearFailTimer(tempId)
+
+    const timer = setTimeout(() => {
+      failTimersRef.current.delete(tempId)
+      dispatch({ type: 'SEND_FAILED', payload: { chatJid, tempId } })
+    }, PENDING_FAIL_TIMEOUT_MS)
+
+    failTimersRef.current.set(tempId, timer)
+  }
+
+  const handleSelectChat = (jid: string) => {
+    dispatch({ type: 'CHAT_SELECTED', payload: jid })
+    send({ type: 'viewing', data: { chatJid: jid } })
+
+    // Fire-and-forget: the server zeroes unread for the whole team and broadcasts chat_upsert
+    markChatRead(jid).catch(() => undefined)
+  }
+
   const handleSend = (text: string) => {
     const jid = state.selectedJid
 
@@ -163,14 +281,22 @@ const InboxView = () => {
       text,
       type: 'text',
       timestamp: Date.now(),
-      pending: true
+      pending: true,
+      ...(state.admin ? { adminId: state.admin.id, adminName: state.admin.name } : {})
     }
 
     dispatch({ type: 'SEND_OPTIMISTIC', payload: tempMsg })
+    armFailTimer(jid, tempId)
 
     sendMessage(jid, text)
-      .then(message => dispatch({ type: 'SEND_CONFIRMED', payload: { chatJid: jid, tempId, message } }))
-      .catch(() => dispatch({ type: 'SEND_FAILED', payload: { chatJid: jid, tempId } }))
+      .then(message => {
+        clearFailTimer(tempId)
+        dispatch({ type: 'SEND_CONFIRMED', payload: { chatJid: jid, tempId, message } })
+      })
+      .catch(() => {
+        clearFailTimer(tempId)
+        dispatch({ type: 'SEND_FAILED', payload: { chatJid: jid, tempId } })
+      })
   }
 
   const cleanupMediaTemp = (tempId: string, localUrl?: string) => {
@@ -200,19 +326,25 @@ const InboxView = () => {
       fileName: file.name,
       fileSize: file.size,
       pending: true,
+      ...(state.admin ? { adminId: state.admin.id, adminName: state.admin.name } : {}),
       ...(type === 'image' ? { localUrl: URL.createObjectURL(file) } : {})
     }
 
     pendingFilesRef.current.set(tempId, file)
 
     dispatch({ type: 'SEND_OPTIMISTIC', payload: tempMsg })
+    armFailTimer(jid, tempId)
 
     sendMedia(jid, file)
       .then(message => {
+        clearFailTimer(tempId)
         cleanupMediaTemp(tempId, tempMsg.localUrl)
         dispatch({ type: 'SEND_CONFIRMED', payload: { chatJid: jid, tempId, message } })
       })
-      .catch(() => dispatch({ type: 'SEND_FAILED', payload: { chatJid: jid, tempId } }))
+      .catch(() => {
+        clearFailTimer(tempId)
+        dispatch({ type: 'SEND_FAILED', payload: { chatJid: jid, tempId } })
+      })
   }
 
   const handleRetryMessage = (message: Message) => {
@@ -220,16 +352,22 @@ const InboxView = () => {
     const file = pendingFilesRef.current.get(tempId)
 
     dispatch({ type: 'SEND_RETRYING', payload: { chatJid, tempId } })
+    armFailTimer(chatJid, tempId)
 
     const resend = file ? sendMedia(chatJid, file) : sendMessage(chatJid, text)
 
     resend
       .then(serverMsg => {
+        clearFailTimer(tempId)
+
         if (file) cleanupMediaTemp(tempId, message.localUrl)
 
         dispatch({ type: 'SEND_CONFIRMED', payload: { chatJid, tempId, message: serverMsg } })
       })
-      .catch(() => dispatch({ type: 'SEND_FAILED', payload: { chatJid, tempId } }))
+      .catch(() => {
+        clearFailTimer(tempId)
+        dispatch({ type: 'SEND_FAILED', payload: { chatJid, tempId } })
+      })
   }
 
   const handleLoadOlder = (jid: string) => {
@@ -240,14 +378,40 @@ const InboxView = () => {
     loadMessages(jid, 'older', messages[0])
   }
 
-  const handleLogout = async () => {
-    // Optimistic reset; the backend confirms via a WS status event
-    dispatch({ type: 'STATUS_CHANGED', payload: { status: 'waiting_qr', me: null, error: null } })
+  const handleToggleStatus = (chat: Chat) => {
+    const nextStatus = chatStatus(chat) === 'open' ? 'resolved' : 'open'
 
+    // Optimistic flip; the server response (or a revert on failure) lands via the same action
+    dispatch({ type: 'CHAT_UPSERTED', payload: { ...chat, status: nextStatus } })
+
+    setChatStatus(chat.jid, nextStatus)
+      .then(updated => dispatch({ type: 'CHAT_UPSERTED', payload: updated }))
+      .catch(() => {
+        dispatch({ type: 'CHAT_UPSERTED', payload: chat })
+        setSnackbarMessage('Gagal mengubah status chat. Coba lagi.')
+      })
+  }
+
+  const handleAdminLogout = async () => {
+    try {
+      await authLogout()
+    } catch {
+      // Ignore; the session cookie is gone or the redirect below sorts it out
+    }
+
+    router.replace('/login')
+  }
+
+  const handleLogout = async () => {
     try {
       await logout()
-    } catch {
-      // Ignore; the next status event or refresh will correct the state
+
+      // Optimistic reset; the backend confirms via a WS status event
+      dispatch({ type: 'STATUS_CHANGED', payload: { status: 'waiting_qr', me: null, error: null } })
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 403) {
+        setSnackbarMessage('Hanya owner yang bisa memutuskan koneksi WhatsApp')
+      }
     }
   }
 
@@ -274,27 +438,41 @@ const InboxView = () => {
               error={state.chatsError}
               selectedJid={state.selectedJid}
               search={state.search}
+              statusFilter={state.statusFilter}
               me={state.me}
+              admin={state.admin}
+              viewers={otherViewers}
               soundMode={soundMode}
               onSoundModeChange={setSoundMode}
               onSearchChange={value => dispatch({ type: 'SEARCH_CHANGED', payload: value })}
-              onSelectChat={jid => dispatch({ type: 'CHAT_SELECTED', payload: jid })}
+              onStatusFilterChange={value => dispatch({ type: 'STATUS_FILTER_CHANGED', payload: value })}
+              onSelectChat={handleSelectChat}
               onRetry={loadChats}
               onLogout={handleLogout}
+              onAdminLogout={handleAdminLogout}
             />
             <ChatPanel
               chat={selectedChat}
               messages={selectedMessages}
               meta={selectedMeta}
+              viewerNames={selectedViewerNames}
               onSend={handleSend}
               onSendMedia={handleSendMedia}
               onLoadOlder={handleLoadOlder}
               onRetryInitial={jid => loadMessages(jid, 'initial')}
               onRetryMessage={handleRetryMessage}
+              onToggleStatus={handleToggleStatus}
             />
           </div>
         </div>
       )}
+      <Snackbar
+        open={snackbarMessage !== null}
+        autoHideDuration={4000}
+        onClose={() => setSnackbarMessage(null)}
+        message={snackbarMessage}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      />
     </div>
   )
 }

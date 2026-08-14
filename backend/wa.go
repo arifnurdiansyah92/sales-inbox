@@ -82,15 +82,23 @@ type ingestMsg struct {
 	fileSize   int64
 	raw        []byte // marshaled waE2E.Message, media messages only
 	status     int    // 0 none, 1 sent, 2 delivered, 3 read
+	adminID    int64  // acting admin, app-sent messages only (0 = none)
+	adminName  string
 }
 
 func (im ingestMsg) message() Message {
-	return Message{
+	m := Message{
 		ID: im.id, ChatJID: im.chatJID, SenderJID: im.senderJID, SenderName: im.senderName,
 		FromMe: im.fromMe, Text: im.text, Type: im.msgType, Timestamp: im.ts,
 		MimeType: im.mimeType, FileName: im.fileName, FileSize: im.fileSize,
 		HasMedia: len(im.raw) > 0, Status: statusToString(im.status), RawMsg: im.raw,
+		AdminName: im.adminName,
 	}
+	if im.adminID != 0 {
+		id := im.adminID
+		m.AdminID = &id
+	}
+	return m
 }
 
 // chatPreview is the chats.last_msg_text string for this message.
@@ -123,10 +131,11 @@ type ReceiptPayload struct {
 }
 
 type Manager struct {
-	st        *Store
-	hub       *Hub
-	container *sqlstore.Container
-	mediaDir  string
+	st             *Store
+	hub            *Hub
+	container      *sqlstore.Container
+	mediaDir       string
+	agentSignature bool // prefix outgoing content with the admin's name
 
 	mediaLocks sync.Map // cache key -> *sync.Mutex, guards concurrent downloads
 
@@ -152,7 +161,7 @@ type Manager struct {
 	histCh chan *events.HistorySync
 }
 
-func NewManager(ctx context.Context, dataDir string, st *Store, hub *Hub) (*Manager, error) {
+func NewManager(ctx context.Context, dataDir string, st *Store, hub *Hub, agentSignature bool) (*Manager, error) {
 	wstore.DeviceProps.Os = proto.String("Sales Inbox")
 	wstore.DeviceProps.PlatformType = waCompanionReg.DeviceProps_DESKTOP.Enum()
 
@@ -163,14 +172,15 @@ func NewManager(ctx context.Context, dataDir string, st *Store, hub *Hub) (*Mana
 		return nil, err
 	}
 	m := &Manager{
-		st:        st,
-		hub:       hub,
-		container: container,
-		mediaDir:  filepath.Join(dataDir, "media"),
-		status:    "disconnected",
-		nameCache: make(map[string]string),
-		avatars:   make(map[string]avatarEntry),
-		histCh:    make(chan *events.HistorySync, 32),
+		st:             st,
+		hub:            hub,
+		container:      container,
+		mediaDir:       filepath.Join(dataDir, "media"),
+		agentSignature: agentSignature,
+		status:         "disconnected",
+		nameCache:      make(map[string]string),
+		avatars:        make(map[string]avatarEntry),
+		histCh:         make(chan *events.HistorySync, 32),
 	}
 	if err := m.buildClient(ctx); err != nil {
 		return nil, err
@@ -479,7 +489,7 @@ func (m *Manager) warmCaches(cli *whatsmeow.Client) {
 		m.nameMu.Lock()
 		m.nameCache[jid.String()] = g.Name
 		m.nameMu.Unlock()
-		if err := m.st.UpsertChat(ctx, nil, jid.String(), g.Name, true, "", 0, 0); err != nil {
+		if err := m.st.UpsertChat(ctx, nil, jid.String(), g.Name, true, "", 0, 0, false); err != nil {
 			log.Printf("upsert group chat: %v", err)
 		}
 	}
@@ -736,7 +746,10 @@ func (m *Manager) ingest(ctx context.Context, q dbtx, im ingestMsg, live bool) (
 	if live && !im.fromMe && inserted {
 		unread = 1
 	}
-	if err := m.st.UpsertChat(ctx, q, im.chatJID, im.chatName, im.isGroup, im.chatPreview(), im.ts, unread); err != nil {
+	// Live incoming messages reopen a resolved chat; history sync never
+	// touches status.
+	reopen := live && !im.fromMe
+	if err := m.st.UpsertChat(ctx, q, im.chatJID, im.chatName, im.isGroup, im.chatPreview(), im.ts, unread, reopen); err != nil {
 		return inserted, err
 	}
 	return inserted, nil
@@ -803,7 +816,16 @@ func (m *Manager) handleLiveMessage(e *events.Message) {
 	})
 }
 
-func (m *Manager) SendText(ctx context.Context, to types.JID, text string) (Message, error) {
+// signContent prepends "*<admin name>*:\n" when the agent signature is on.
+// The result is what WhatsApp shows, and what the DB stores.
+func (m *Manager) signContent(admin Admin, text string) string {
+	if !m.agentSignature || admin.Name == "" {
+		return text
+	}
+	return "*" + admin.Name + "*:\n" + text
+}
+
+func (m *Manager) SendText(ctx context.Context, to types.JID, text string, admin Admin) (Message, error) {
 	m.mu.Lock()
 	cli := m.client
 	connected := m.status == "connected"
@@ -811,6 +833,7 @@ func (m *Manager) SendText(ctx context.Context, to types.JID, text string) (Mess
 	if !connected || cli == nil {
 		return Message{}, errNotConnected
 	}
+	text = m.signContent(admin, text)
 	resp, err := cli.SendMessage(ctx, to, &waE2E.Message{Conversation: proto.String(text)})
 	if err != nil {
 		return Message{}, err
@@ -829,18 +852,23 @@ func (m *Manager) SendText(ctx context.Context, to types.JID, text string) (Mess
 		chatJID: chat.String(), id: resp.ID, senderJID: m.ownJID().String(), senderName: "",
 		fromMe: true, text: text, msgType: "text", ts: resp.Timestamp.UnixMilli(),
 		isGroup: isGroup, chatName: chatName, status: 1,
+		adminID: admin.ID, adminName: admin.Name,
 	})
 	return msg, nil
 }
 
 // SendMedia uploads data and sends it as an image, video or document message.
-func (m *Manager) SendMedia(ctx context.Context, to types.JID, data []byte, mimeType, fileName, caption string) (Message, error) {
+func (m *Manager) SendMedia(ctx context.Context, to types.JID, data []byte, mimeType, fileName, caption string, admin Admin) (Message, error) {
 	m.mu.Lock()
 	cli := m.client
 	connected := m.status == "connected"
 	m.mu.Unlock()
 	if !connected || cli == nil {
 		return Message{}, errNotConnected
+	}
+	if caption != "" {
+		// Signature only when there is a caption to carry it.
+		caption = m.signContent(admin, caption)
 	}
 
 	var mediaType whatsmeow.MediaType
@@ -914,8 +942,21 @@ func (m *Manager) SendMedia(ctx context.Context, to types.JID, data []byte, mime
 		isGroup: isGroup, chatName: chatName,
 		mimeType: mimeType, fileName: rowFileName, fileSize: int64(len(data)),
 		raw: marshalRawIfMedia(wmsg, true), status: 1,
+		adminID: admin.ID, adminName: admin.Name,
 	})
 	return msg, nil
+}
+
+// Health reports the WhatsApp side of /healthz: whether the client is
+// currently connected and whether a device is paired.
+func (m *Manager) Health() (connected, loggedIn bool) {
+	m.mu.Lock()
+	cli := m.client
+	m.mu.Unlock()
+	if cli == nil {
+		return false, false
+	}
+	return cli.IsConnected(), cli.Store.ID != nil
 }
 
 func (m *Manager) historyWorker() {

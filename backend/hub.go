@@ -14,10 +14,23 @@ type Frame struct {
 	Data any    `json:"data"`
 }
 
+type PresenceViewer struct {
+	ChatJID   string `json:"chatJid"`
+	AdminID   int64  `json:"adminId"`
+	AdminName string `json:"adminName"`
+}
+
+type PresencePayload struct {
+	Viewers []PresenceViewer `json:"viewers"`
+}
+
 type wsConn struct {
-	ws   *websocket.Conn
-	send chan Frame
-	once sync.Once
+	ws        *websocket.Conn
+	send      chan Frame
+	once      sync.Once
+	adminID   int64
+	adminName string
+	viewing   string // chat JID currently open in this client, "" for none
 }
 
 func (c *wsConn) writeLoop() {
@@ -59,8 +72,8 @@ func (h *Hub) SetCountListener(f func(int)) {
 	h.mu.Unlock()
 }
 
-func (h *Hub) Register(ws *websocket.Conn) *wsConn {
-	c := &wsConn{ws: ws, send: make(chan Frame, 64)}
+func (h *Hub) Register(ws *websocket.Conn, adminID int64, adminName string) *wsConn {
+	c := &wsConn{ws: ws, send: make(chan Frame, 64), adminID: adminID, adminName: adminName}
 	h.mu.Lock()
 	h.conns[c] = struct{}{}
 	n := len(h.conns)
@@ -89,6 +102,51 @@ func (h *Hub) Unregister(c *wsConn) {
 	if cb != nil {
 		cb(n)
 	}
+	h.BroadcastPresence()
+}
+
+// SetViewing records which chat the connection is looking at and, when it
+// actually changed, broadcasts a fresh presence snapshot.
+func (h *Hub) SetViewing(c *wsConn, chatJID string) {
+	h.mu.Lock()
+	_, ok := h.conns[c]
+	changed := ok && c.viewing != chatJID
+	if changed {
+		c.viewing = chatJID
+	}
+	h.mu.Unlock()
+	if changed {
+		h.BroadcastPresence()
+	}
+}
+
+// presenceSnapshot lists every connection with an open chat, deduplicated by
+// (adminID, chatJID). Callers must hold h.mu.
+func (h *Hub) presenceSnapshot() PresencePayload {
+	seen := make(map[[2]any]struct{}, len(h.conns))
+	viewers := make([]PresenceViewer, 0, len(h.conns))
+	for c := range h.conns {
+		if c.viewing == "" {
+			continue
+		}
+		key := [2]any{c.adminID, c.viewing}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		viewers = append(viewers, PresenceViewer{ChatJID: c.viewing, AdminID: c.adminID, AdminName: c.adminName})
+	}
+	return PresencePayload{Viewers: viewers}
+}
+
+// BroadcastPresence pushes the current snapshot to every client. Called on
+// connect (which also delivers it to the new client), disconnect and any
+// viewing change.
+func (h *Hub) BroadcastPresence() {
+	h.mu.Lock()
+	f := Frame{Type: "presence", Data: h.presenceSnapshot()}
+	h.mu.Unlock()
+	h.Broadcast(f)
 }
 
 // Broadcast queues the frame on every connection; connections whose buffer is

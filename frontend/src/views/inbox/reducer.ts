@@ -1,13 +1,26 @@
 // Type Imports
-import type { Chat, ConnectionStatus, Me, Message, MessageStatus, StatusPayload } from '@/types/chatTypes'
+import type {
+  AdminUser,
+  Chat,
+  ChatStatus,
+  ConnectionStatus,
+  Me,
+  Message,
+  MessageStatus,
+  PresenceViewer,
+  StatusPayload
+} from '@/types/chatTypes'
 
 export const MESSAGE_PAGE_SIZE = 50
 
 export type MessagesMeta = { loading: boolean; error: boolean; hasMore: boolean }
 
+export type ChatStatusFilter = ChatStatus | 'all'
+
 export type InboxState = {
   status: ConnectionStatus
   me: Me | null
+  admin: AdminUser | null
   statusError: string | null
   qr: { dataUrl: string; timeoutMs: number } | null
   wsLive: boolean
@@ -16,15 +29,20 @@ export type InboxState = {
   chatsError: boolean
   selectedJid: string | null
   search: string
+  statusFilter: ChatStatusFilter
+  viewers: PresenceViewer[]
   messages: Record<string, Message[]>
   messagesMeta: Record<string, MessagesMeta>
 }
 
 export type InboxAction =
   | { type: 'STATUS_CHANGED'; payload: StatusPayload }
+  | { type: 'ADMIN_LOADED'; payload: AdminUser }
   | { type: 'QR_RECEIVED'; payload: { dataUrl: string; timeoutMs: number } }
   | { type: 'WS_LIVE_CHANGED'; payload: boolean }
   | { type: 'SEARCH_CHANGED'; payload: string }
+  | { type: 'STATUS_FILTER_CHANGED'; payload: ChatStatusFilter }
+  | { type: 'PRESENCE_CHANGED'; payload: PresenceViewer[] }
   | { type: 'CHATS_LOADING' }
   | { type: 'CHATS_LOADED'; payload: Chat[] }
   | { type: 'CHATS_FAILED' }
@@ -38,11 +56,13 @@ export type InboxAction =
   | { type: 'SEND_CONFIRMED'; payload: { chatJid: string; tempId: string; message: Message } }
   | { type: 'SEND_FAILED'; payload: { chatJid: string; tempId: string } }
   | { type: 'SEND_RETRYING'; payload: { chatJid: string; tempId: string } }
+  | { type: 'PENDING_SWEPT'; payload: { olderThanTs: number } }
   | { type: 'RECEIPT_RECEIVED'; payload: { chatJid: string; ids: string[]; status: 'delivered' | 'read' } }
 
 export const initialInboxState: InboxState = {
   status: 'connecting',
   me: null,
+  admin: null,
   statusError: null,
   qr: null,
   wsLive: false,
@@ -51,6 +71,8 @@ export const initialInboxState: InboxState = {
   chatsError: false,
   selectedJid: null,
   search: '',
+  statusFilter: 'open',
+  viewers: [],
   messages: {},
   messagesMeta: {}
 }
@@ -112,6 +134,9 @@ export const inboxReducer = (state: InboxState, action: InboxAction): InboxState
       return next
     }
 
+    case 'ADMIN_LOADED':
+      return { ...state, admin: action.payload }
+
     case 'QR_RECEIVED':
       return { ...state, qr: action.payload }
 
@@ -120,6 +145,12 @@ export const inboxReducer = (state: InboxState, action: InboxAction): InboxState
 
     case 'SEARCH_CHANGED':
       return { ...state, search: action.payload }
+
+    case 'STATUS_FILTER_CHANGED':
+      return { ...state, statusFilter: action.payload }
+
+    case 'PRESENCE_CHANGED':
+      return { ...state, viewers: action.payload }
 
     case 'CHATS_LOADING':
       return { ...state, chatsLoading: true, chatsError: false }
@@ -229,6 +260,33 @@ export const inboxReducer = (state: InboxState, action: InboxAction): InboxState
       const next = existing.map(m => (m.id === tempId ? { ...m, pending: true, failed: false } : m))
 
       return { ...state, messages: { ...state.messages, [chatJid]: next } }
+    }
+
+    case 'PENDING_SWEPT': {
+      // Reconnect sweep: optimistic sends the server never confirmed are marked failed
+      const { olderThanTs } = action.payload
+      const messages: Record<string, Message[]> = {}
+      let changed = false
+
+      for (const [jid, list] of Object.entries(state.messages)) {
+        let listChanged = false
+
+        const next = list.map(m => {
+          if (!m.pending || !m.id.startsWith('temp-') || m.timestamp >= olderThanTs) return m
+
+          listChanged = true
+
+          return { ...m, pending: false, failed: true }
+        })
+
+        messages[jid] = listChanged ? next : list
+
+        if (listChanged) changed = true
+      }
+
+      if (!changed) return state
+
+      return { ...state, messages }
     }
 
     case 'RECEIPT_RECEIVED': {

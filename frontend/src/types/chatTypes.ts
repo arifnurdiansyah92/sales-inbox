@@ -8,6 +8,12 @@ export type MessageType = 'text' | 'image' | 'video' | 'document' | 'audio' | 's
 
 export type MessageStatus = '' | 'sent' | 'delivered' | 'read'
 
+export type ChatStatus = 'open' | 'resolved'
+
+export type AdminUser = { id: number; username: string; name: string; isOwner: boolean }
+
+export type PresenceViewer = { chatJid: string; adminId: number; adminName: string }
+
 export type Chat = {
   jid: string
   name: string
@@ -15,6 +21,7 @@ export type Chat = {
   lastMessage: string
   lastMessageAt: number
   unreadCount: number
+  status?: ChatStatus
 }
 
 export type Message = {
@@ -31,6 +38,8 @@ export type Message = {
   fileSize?: number
   hasMedia?: boolean
   status?: MessageStatus
+  adminId?: number
+  adminName?: string
   pending?: boolean
   failed?: boolean
   localUrl?: string
@@ -42,3 +51,7 @@ export type WSEvent =
   | { type: 'message'; data: Message }
   | { type: 'chat_upsert'; data: Chat }
   | { type: 'receipt'; data: { chatJid: string; ids: string[]; status: 'delivered' | 'read' } }
+  | { type: 'presence'; data: { viewers: PresenceViewer[] } }
+
+// The only client→server frame: which chat this admin currently has open (null = none)
+export type WSClientFrame = { type: 'viewing'; data: { chatJid: string | null } }

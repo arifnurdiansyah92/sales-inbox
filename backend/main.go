@@ -58,13 +58,15 @@ func main() {
 	}
 
 	hub := NewHub()
-	mgr, err := NewManager(context.Background(), dataDir, st, hub)
+	agentSignature := envDefault("AGENT_SIGNATURE", "on") != "off"
+	mgr, err := NewManager(context.Background(), dataDir, st, hub, agentSignature)
 	if err != nil {
 		log.Fatalf("init whatsapp: %v", err)
 	}
 	hub.SetCountListener(mgr.OnClientCountChange)
 
-	api := NewAPI(mgr, st, hub, frontendOrigin)
+	auth := NewAuth(st, frontendOrigin)
+	api := NewAPI(mgr, st, hub, auth, frontendOrigin)
 	srv := &http.Server{Addr: ":" + port, Handler: api.Routes()}
 
 	go func() {

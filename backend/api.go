@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/coder/websocket"
 	"go.mau.fi/whatsmeow/types"
@@ -22,30 +24,37 @@ type API struct {
 	mgr             *Manager
 	st              *Store
 	hub             *Hub
+	auth            *Auth
 	frontendOrigin  string
 	wsOriginPattern string
 }
 
-func NewAPI(mgr *Manager, st *Store, hub *Hub, frontendOrigin string) *API {
+func NewAPI(mgr *Manager, st *Store, hub *Hub, auth *Auth, frontendOrigin string) *API {
 	pattern := frontendOrigin
 	if u, err := url.Parse(frontendOrigin); err == nil && u.Host != "" {
 		pattern = u.Host
 	}
-	return &API{mgr: mgr, st: st, hub: hub, frontendOrigin: frontendOrigin, wsOriginPattern: pattern}
+	return &API{mgr: mgr, st: st, hub: hub, auth: auth, frontendOrigin: frontendOrigin, wsOriginPattern: pattern}
 }
 
 func (a *API) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", a.handleHealthz)
+	mux.HandleFunc("POST /api/auth/login", a.auth.handleLogin)
+	mux.HandleFunc("POST /api/auth/logout", a.auth.handleLogout)
+	mux.HandleFunc("GET /api/auth/me", a.auth.handleMe)
 	mux.HandleFunc("GET /api/status", a.handleStatus)
 	mux.HandleFunc("GET /api/chats", a.handleChats)
 	mux.HandleFunc("GET /api/chats/{jid}/messages", a.handleListMessages)
 	mux.HandleFunc("POST /api/chats/{jid}/messages", a.handleSendMessage)
 	mux.HandleFunc("POST /api/chats/{jid}/media", a.handleSendMedia)
+	mux.HandleFunc("POST /api/chats/{jid}/read", a.handleMarkRead)
+	mux.HandleFunc("PATCH /api/chats/{jid}", a.handlePatchChat)
 	mux.HandleFunc("GET /api/media/{jid}/{id}", a.handleMedia)
 	mux.HandleFunc("POST /api/logout", a.handleLogout)
 	mux.HandleFunc("GET /api/avatar/{jid}", a.handleAvatar)
 	mux.HandleFunc("GET /ws", a.handleWS)
-	return a.cors(mux)
+	return a.cors(a.auth.Wrap(mux))
 }
 
 func (a *API) cors(next http.Handler) http.Handler {
@@ -53,13 +62,34 @@ func (a *API) cors(next http.Handler) http.Handler {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", a.frontendOrigin)
 		h.Set("Vary", "Origin")
-		h.Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		h.Set("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Content-Type")
+		h.Set("Access-Control-Allow-Credentials", "true")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// handleHealthz stays outside session/auth middleware (see Auth.Wrap) so it
+// keeps answering even when the session store is down.
+func (a *API) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+	dbOK := a.st.db.PingContext(ctx) == nil
+	waConnected, loggedIn := a.mgr.Health()
+	ok := dbOK && (waConnected || !loggedIn)
+	status := http.StatusOK
+	if !ok {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, map[string]bool{
+		"ok":       ok,
+		"db":       dbOK,
+		"whatsapp": waConnected,
+		"loggedIn": loggedIn,
 	})
 }
 
@@ -131,10 +161,56 @@ func (a *API) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := a.st.ClearUnread(r.Context(), key); err != nil {
-		log.Printf("clear unread %s: %v", key, err)
-	}
 	writeJSON(w, http.StatusOK, msgs)
+}
+
+// handleMarkRead resets the unread counter; the frontend calls it when a chat
+// is actually opened (listing messages no longer clears it implicitly).
+func (a *API) handleMarkRead(w http.ResponseWriter, r *http.Request) {
+	jid, ok := pathJID(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "JID tidak valid")
+		return
+	}
+	key := jid.ToNonAD().String()
+	if err := a.st.ClearUnread(r.Context(), key); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+	if chat, found, err := a.st.GetChat(context.Background(), key); err == nil && found {
+		a.hub.Broadcast(Frame{Type: "chat_upsert", Data: chat})
+	}
+}
+
+func (a *API) handlePatchChat(w http.ResponseWriter, r *http.Request) {
+	jid, ok := pathJID(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "JID tidak valid")
+		return
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "Body tidak valid")
+		return
+	}
+	if body.Status != "open" && body.Status != "resolved" {
+		writeErr(w, http.StatusBadRequest, "Status tidak valid")
+		return
+	}
+	chat, found, err := a.st.SetChatStatus(r.Context(), jid.ToNonAD().String(), body.Status)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, "Chat tidak ditemukan")
+		return
+	}
+	a.hub.Broadcast(Frame{Type: "chat_upsert", Data: chat})
+	writeJSON(w, http.StatusOK, chat)
 }
 
 func (a *API) handleSendMessage(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +230,7 @@ func (a *API) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "Teks pesan kosong")
 		return
 	}
-	msg, err := a.mgr.SendText(r.Context(), jid, body.Text)
+	msg, err := a.mgr.SendText(r.Context(), jid, body.Text, adminFrom(r.Context()))
 	if errors.Is(err, errNotConnected) {
 		writeErr(w, http.StatusConflict, errNotConnected.Error())
 		return
@@ -224,7 +300,7 @@ func (a *API) handleSendMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	caption := strings.TrimSpace(r.FormValue("caption"))
 
-	msg, err := a.mgr.SendMedia(r.Context(), jid, data, detectMime(hdr, data), hdr.Filename, caption)
+	msg, err := a.mgr.SendMedia(r.Context(), jid, data, detectMime(hdr, data), hdr.Filename, caption, adminFrom(r.Context()))
 	if errors.Is(err, errNotConnected) {
 		writeErr(w, http.StatusConflict, errNotConnected.Error())
 		return
@@ -296,7 +372,12 @@ func (a *API) handleMedia(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "", st.ModTime(), f)
 }
 
+// handleLogout disconnects the WhatsApp session for everyone — owner only.
 func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if !adminFrom(r.Context()).IsOwner {
+		writeErr(w, http.StatusForbidden, msgOwnerOnly)
+		return
+	}
 	a.mgr.Logout(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -317,22 +398,45 @@ func (a *API) handleAvatar(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+// wsClientFrame is what clients may send over the socket. Only "viewing" is
+// understood; anything malformed or unknown is ignored.
+type wsClientFrame struct {
+	Type string `json:"type"`
+	Data struct {
+		ChatJID *string `json:"chatJid"`
+	} `json:"data"`
+}
+
+// handleWS runs behind requireAuth, so the session is already validated (and
+// the admin known) before the websocket handshake happens.
 func (a *API) handleWS(w http.ResponseWriter, r *http.Request) {
+	admin := adminFrom(r.Context())
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		OriginPatterns: []string{a.wsOriginPattern},
 	})
 	if err != nil {
 		return
 	}
-	c := a.hub.Register(ws)
+	c := a.hub.Register(ws, admin.ID, admin.Name)
 	for _, f := range a.mgr.InitialFrames() {
 		a.hub.SendTo(c, f)
 	}
-	// Discard incoming data messages; exit when the connection closes.
+	// The connect-time broadcast doubles as the newcomer's first snapshot.
+	a.hub.BroadcastPresence()
 	for {
-		if _, _, err := ws.Read(r.Context()); err != nil {
+		_, data, err := ws.Read(r.Context())
+		if err != nil {
 			break
 		}
+		var f wsClientFrame
+		if json.Unmarshal(data, &f) != nil || f.Type != "viewing" {
+			continue
+		}
+		viewing := ""
+		if f.Data.ChatJID != nil {
+			viewing = *f.Data.ChatJID
+		}
+		a.hub.SetViewing(c, viewing)
 	}
 	a.hub.Unregister(c)
 }

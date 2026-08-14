@@ -1,5 +1,6 @@
 // MUI Imports
 import Chip from '@mui/material/Chip'
+import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 
 // Third-party Imports
@@ -17,10 +18,11 @@ import { formatListTime } from './utils'
 type Props = {
   chat: Chat
   selected: boolean
+  viewerNames: string[]
   onSelect: (jid: string) => void
 }
 
-const ChatListItem = ({ chat, selected, onSelect }: Props) => (
+const ChatListItem = ({ chat, selected, viewerNames, onSelect }: Props) => (
   <div
     role='button'
     tabIndex={0}
@@ -50,6 +52,11 @@ const ChatListItem = ({ chat, selected, onSelect }: Props) => (
         <Typography variant='body2' color='text.secondary' className='flex-auto' noWrap>
           {chat.lastMessage}
         </Typography>
+        {viewerNames.length > 0 && (
+          <Tooltip title={`${viewerNames.join(', ')} sedang membuka chat ini`}>
+            <i className='tabler-eye text-base text-textSecondary shrink-0' />
+          </Tooltip>
+        )}
         {chat.unreadCount > 0 && <Chip size='small' color='primary' label={chat.unreadCount} className='shrink-0' />}
       </div>
     </div>

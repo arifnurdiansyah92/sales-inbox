@@ -40,6 +40,24 @@ CREATE TABLE IF NOT EXISTS messages (
   PRIMARY KEY (account_id, chat_jid, id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_acct_chat_ts_id ON messages(account_id, chat_jid, ts, id);
+CREATE TABLE IF NOT EXISTS admins (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL DEFAULT 1,
+  username TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  is_owner BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  data BYTEA NOT NULL,
+  expiry TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions (expiry);
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS admin_id BIGINT;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS admin_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE chats ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open';
 `
 
 // Init creates the app tables and index if they do not exist.

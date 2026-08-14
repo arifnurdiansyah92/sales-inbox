@@ -1,7 +1,10 @@
 // Type Imports
-import type { MessageType } from '@/types/chatTypes'
+import type { Chat, ChatStatus, MessageType } from '@/types/chatTypes'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+
+// Older rows created before the status column exists count as open
+export const chatStatus = (chat: Chat): ChatStatus => chat.status ?? 'open'
 
 export const isSameDay = (a: number, b: number): boolean => {
   const dateA = new Date(a)

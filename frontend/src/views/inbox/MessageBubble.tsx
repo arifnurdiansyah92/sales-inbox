@@ -181,6 +181,11 @@ const MessageBubble = ({ message, isGroup, onRetry, onMediaLoad }: Props) => {
           <Typography variant='caption' color='inherit' className='opacity-70'>
             {formatClock(message.timestamp)}
           </Typography>
+          {message.fromMe && message.adminName && (
+            <Typography variant='caption' color='inherit' className='opacity-70'>
+              · {message.adminName}
+            </Typography>
+          )}
           {message.fromMe && message.pending && <i className='tabler-clock text-sm opacity-70' />}
           {message.fromMe && message.failed && <i className='tabler-alert-circle text-sm' />}
           {renderTick()}

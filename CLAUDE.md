@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Sales Inbox — WhatsApp Web di aplikasi sendiri: admin membalas chat pelanggan memakai nomor WhatsApp perusahaan. Dua bagian terpisah:
 
-- `backend/` — Go + whatsmeow (library WhatsApp multi-device **unofficial**), SQLite (modernc, pure Go), REST + WebSocket.
+- `backend/` — Go + whatsmeow (library WhatsApp multi-device **unofficial**), PostgreSQL (pgx; sesi whatsmeow DAN data app dalam satu database, semua tabel app ber-`account_id`), REST + WebSocket, auth session-cookie (scs + argon2id).
 - `frontend/` — Next.js 16 App Router + MUI v7 (template Vuexy), halaman inbox di `/inbox`.
 
 Seluruh teks UI dan komunikasi dengan user memakai Bahasa Indonesia.
@@ -32,7 +32,9 @@ pnpm lint           # eslint (import order dienforce)
 pnpm build          # production build
 ```
 
-Env: backend `PORT`, `FRONTEND_ORIGIN` (default http://localhost:3000), `DATA_DIR` (default `%LOCALAPPDATA%\sales-inbox` — SENGAJA di luar folder OneDrive; sync OneDrive merusak SQLite WAL). Frontend `NEXT_PUBLIC_API_URL` (di-inline saat build).
+CLI backend: `go run ./cmd/admin -username x -name "X" -password y [-owner]` (kelola akun admin), `go run ./cmd/migrate` (migrasi satu kali data SQLite lama → Postgres).
+
+Env backend (dibaca dari `backend/.env` via godotenv, JANGAN commit): `POSTGRES_DSN` (wajib), `PORT`, `FRONTEND_ORIGIN` (default http://localhost:3000; menentukan CORS, origin WS, dan flag Secure cookie), `DATA_DIR` (cache file media; SENGAJA di luar folder OneDrive), `AGENT_SIGNATURE` (on/off, prefix `*Nama*:` di pesan keluar). Frontend `NEXT_PUBLIC_API_URL` (di-inline saat build; string kosong = same-origin di belakang Caddy). Postgres dev: container Docker `sales-inbox-db` port 5433.
 
 ## Arsitektur
 
@@ -57,6 +59,8 @@ Frontend: state terpusat di reducer (`src/views/inbox/reducer.ts`); komponen pre
 - **Fitur blast/broadcast DITOLAK** selama memakai whatsmeow (unofficial) — pola blast memicu ban nomor WA. Jangan dibangun meski diminta stakeholder; arahkan ke WhatsApp Business API resmi.
 - Session store whatsmeow (`whatsmeow.db` / tabel session) = kredensial penuh akun WA — perlakukan seperti secret.
 
-## Roadmap tahap 1 (disepakati)
+## Status tahap 1 (2026-08-15: SELESAI diimplementasi)
 
-Deploy VPS, 1 nomor WA, 2–5 admin, internal dulu (SaaS menyusul). Urutan: git repo → migrasi ke **PostgreSQL** (sudah tersedia di infra user; session store whatsmeow via `sqlstore.NewWithDB` + driver pgx, app DB di-port dari SQLite, tambah kolom `account_id` hardcode 1) → auth admin (session cookie `alexedwards/scs` + argon2id, flag `is_owner`) → Caddy same-origin (`/api` + `/ws` ke Go, sisanya Next static export) → fitur tim P0: atribusi pengirim (`admin_id`), presence "sedang membuka chat", mark-read persisten global, status Open/Selesai, tandai pesan gagal + retry.
+Sudah jalan: repo privat `arifnurdiansyah92/sales-inbox`, PostgreSQL penuh (sesi whatsmeow + data app + tool migrasi `cmd/migrate`), auth admin (scs postgresstore + argon2id + `is_owner` + rate limit login; guard semua `/api/*` kecuali login, `/ws`, kecuali `/healthz` publik), fitur tim P0 (atribusi `admin_id`/`admin_name` + prefix nama, presence viewer via WS frame `viewing`/`presence`, `POST /api/chats/{jid}/read` global, status chat open/resolved + auto-reopen pesan masuk + `PATCH /api/chats/{jid}`, pending→failed timeout/sweep di frontend), deploy compose (Caddy same-origin `/api` `/ws` → Go, sisanya → Next **standalone**; static export TIDAK bisa karena layout template pakai `cookies()`), CI GitHub Actions, `/healthz`.
+
+Belum (P1): TOTP 2FA, quick replies, catatan kontak, notifikasi browser, retensi media, Sentry/uptime, UI kelola admin (sementara via `cmd/admin`).

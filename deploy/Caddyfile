@@ -1,5 +1,5 @@
 # SITE_ADDRESS contoh: inbox.perusahaan.com (Caddy otomatis ambil sertifikat Let's Encrypt)
-# Untuk uji lokal tanpa TLS: SITE_ADDRESS=:8088
+# Untuk uji lokal tanpa TLS: SITE_ADDRESS=:80
 {$SITE_ADDRESS}
 
 encode gzip
@@ -15,10 +15,7 @@ handle /healthz {
 	reverse_proxy backend:8080
 }
 
-# Frontend statis (Next.js output: export)
+# Frontend Next.js (standalone server)
 handle {
-	root * /srv
-	redir / /home 308
-	try_files {path} {path}.html {path}/index.html
-	file_server
+	reverse_proxy frontend:3000
 }

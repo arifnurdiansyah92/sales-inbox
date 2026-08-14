@@ -16,8 +16,17 @@ services:
         max-size: 50m
         max-file: '5'
 
-  caddy:
+  frontend:
     build: ./frontend
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: '3'
+
+  caddy:
+    image: caddy:2-alpine
     restart: unless-stopped
     ports:
       - '80:80'
@@ -30,6 +39,7 @@ services:
       - caddy_config:/config
     depends_on:
       - backend
+      - frontend
 
 volumes:
   backend_data:

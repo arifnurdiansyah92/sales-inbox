@@ -1,31 +1,41 @@
 'use client'
 
 // React Imports
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 // Type Imports
-import type { WSEvent } from '@/types/chatTypes'
+import type { WSClientFrame, WSEvent } from '@/types/chatTypes'
 
 // Util Imports
 import { getWsUrl } from '@/utils/whatsappApi'
 
-const KNOWN_EVENT_TYPES: WSEvent['type'][] = ['status', 'qr', 'message', 'chat_upsert', 'receipt']
+const KNOWN_EVENT_TYPES: WSEvent['type'][] = ['status', 'qr', 'message', 'chat_upsert', 'receipt', 'presence']
 
 type UseWhatsAppSocketProps = {
   onEvent: (e: WSEvent) => void
   onOpen: () => void
 }
 
-export const useWhatsAppSocket = ({ onEvent, onOpen }: UseWhatsAppSocketProps): { live: boolean } => {
+export const useWhatsAppSocket = ({
+  onEvent,
+  onOpen
+}: UseWhatsAppSocketProps): { live: boolean; send: (frame: WSClientFrame) => void } => {
   // States
   const [live, setLive] = useState(false)
 
   // Refs (updated every render so the mount effect always sees the latest callbacks)
   const onEventRef = useRef(onEvent)
   const onOpenRef = useRef(onOpen)
+  const wsRef = useRef<WebSocket | null>(null)
 
   onEventRef.current = onEvent
   onOpenRef.current = onOpen
+
+  const send = useCallback((frame: WSClientFrame) => {
+    const ws = wsRef.current
+
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame))
+  }, [])
 
   useEffect(() => {
     let disposed = false
@@ -56,6 +66,8 @@ export const useWhatsAppSocket = ({ onEvent, onOpen }: UseWhatsAppSocketProps): 
 
         return
       }
+
+      wsRef.current = ws
 
       ws.onopen = () => {
         if (disposed) return
@@ -96,6 +108,7 @@ export const useWhatsAppSocket = ({ onEvent, onOpen }: UseWhatsAppSocketProps): 
 
     return () => {
       disposed = true
+      wsRef.current = null
 
       if (timer) clearTimeout(timer)
 
@@ -109,5 +122,5 @@ export const useWhatsAppSocket = ({ onEvent, onOpen }: UseWhatsAppSocketProps): 
     }
   }, [])
 
-  return { live }
+  return { live, send }
 }
