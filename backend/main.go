@@ -57,6 +57,10 @@ func main() {
 		log.Fatalf("open app db: %v", err)
 	}
 
+	if err := EnsureDefaultAdmin(context.Background(), st); err != nil {
+		log.Fatalf("seed default admin: %v", err)
+	}
+
 	hub := NewHub()
 	agentSignature := envDefault("AGENT_SIGNATURE", "on") != "off"
 	mgr, err := NewManager(context.Background(), dataDir, st, hub, agentSignature)

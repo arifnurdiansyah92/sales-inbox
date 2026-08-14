@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -237,4 +238,27 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// EnsureDefaultAdmin membuat akun default admin/admin (owner) saat belum ada
+// admin sama sekali (instalasi baru). Password default WAJIB segera diganti.
+func EnsureDefaultAdmin(ctx context.Context, st *Store) error {
+	var n int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM admins WHERE account_id=$1`, accountID).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	hash, err := argon2id.CreateHash("admin", argon2id.DefaultParams)
+	if err != nil {
+		return err
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO admins (account_id, username, name, password_hash, is_owner) VALUES ($1, 'admin', 'Admin', $2, TRUE)`,
+		accountID, hash); err != nil {
+		return err
+	}
+	log.Println("PERINGATAN: akun default admin/admin dibuat karena belum ada admin — segera ganti password-nya lewat cmd/admin")
+	return nil
 }
