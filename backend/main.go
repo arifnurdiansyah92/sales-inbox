@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 func envDefault(key, def string) string {
@@ -20,9 +23,19 @@ func envDefault(key, def string) string {
 }
 
 func main() {
+	// .env in the working directory is optional; a missing file is not an error.
+	if err := godotenv.Load(); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Fatalf("load .env: %v", err)
+	}
+
 	port := envDefault("PORT", "8080")
 	frontendOrigin := envDefault("FRONTEND_ORIGIN", "http://localhost:3000")
+	dsn := os.Getenv("POSTGRES_DSN")
+	if dsn == "" {
+		log.Fatal("POSTGRES_DSN is required (set it in the environment or .env)")
+	}
 
+	// DATA_DIR only holds media files now; all state lives in Postgres.
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
 		base := os.Getenv("LOCALAPPDATA")
@@ -39,7 +52,7 @@ func main() {
 		log.Fatalf("create data dir %s: %v", dataDir, err)
 	}
 
-	st, err := OpenStore(dataDir)
+	st, err := OpenStore(dsn)
 	if err != nil {
 		log.Fatalf("open app db: %v", err)
 	}
@@ -55,7 +68,7 @@ func main() {
 	srv := &http.Server{Addr: ":" + port, Handler: api.Routes()}
 
 	go func() {
-		log.Printf("listening on :%s (data dir: %s)", port, dataDir)
+		log.Printf("listening on :%s (media dir: %s)", port, dataDir)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http server: %v", err)
 		}

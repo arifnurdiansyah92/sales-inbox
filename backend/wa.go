@@ -156,9 +156,10 @@ func NewManager(ctx context.Context, dataDir string, st *Store, hub *Hub) (*Mana
 	wstore.DeviceProps.Os = proto.String("Sales Inbox")
 	wstore.DeviceProps.PlatformType = waCompanionReg.DeviceProps_DESKTOP.Enum()
 
-	container, err := sqlstore.New(ctx, "sqlite",
-		sqliteDSN(filepath.Join(dataDir, "whatsmeow.db")), waLog.Stdout("DB", "INFO", true))
-	if err != nil {
+	// Share the app store's Postgres pool. NewWithDB does not run migrations,
+	// so Upgrade must be called explicitly to create the whatsmeow_* tables.
+	container := sqlstore.NewWithDB(st.db, "postgres", waLog.Stdout("DB", "INFO", true))
+	if err := container.Upgrade(ctx); err != nil {
 		return nil, err
 	}
 	m := &Manager{
@@ -991,7 +992,7 @@ func (m *Manager) processConversation(ctx context.Context, conv *waHistorySync.C
 }
 
 func (m *Manager) ingestHistoryChunk(ctx context.Context, cli *whatsmeow.Client, chat types.JID, isGroup bool, chatName string, msgs []*waHistorySync.HistorySyncMsg) (bool, error) {
-	tx, err := m.st.db.BeginTx(ctx, nil) // BEGIN IMMEDIATE via _txlock in DSN
+	tx, err := m.st.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}

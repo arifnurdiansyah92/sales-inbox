@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="672" height="128" viewBox="0 0 336 64" fill="none">
+  <g transform="translate(0,0) scale(1)" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 14h6c10 0 12 18 22 18" stroke="#3c4055"></path>
+    <path d="M8 32h28" stroke="#3c4055"></path>
+    <path d="M8 50h6c10 0 12-18 22-18" stroke="#3c4055"></path>
+    <path d="M36 32h14" stroke="#6d5fc4"></path>
+    <path d="M44 25l7 7-7 7" stroke="#6d5fc4"></path>
+    <circle cx="8" cy="14" r="3" fill="#3c4055" stroke="none"></circle>
+    <circle cx="8" cy="32" r="3" fill="#3c4055" stroke="none"></circle>
+    <circle cx="8" cy="50" r="3" fill="#3c4055" stroke="none"></circle>
+  </g>
+  <rect x="66" y="12" width="1" height="40" fill="#3c4055" opacity="0.4"></rect>
+  <text x="84" y="33" font-family="Inter, Helvetica, Arial, sans-serif" font-size="24" font-weight="500" letter-spacing="-0.4" fill="#20222f">Sales Inbox</text>
+  <text x="85" y="49" font-family="Inter, Helvetica, Arial, sans-serif" font-size="9.5" letter-spacing="1" fill="#6b6f82">SATU INBOX UNTUK SEMUA KANAL</text>
+</svg>
